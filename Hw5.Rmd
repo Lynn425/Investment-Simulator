@@ -1,0 +1,690 @@
+---
+title: "Stat 153 Hw5"
+author: "Ning Tang"
+date: "2022-11-15"
+output: pdf_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Prob1
+
+## (a)
+
+The sample autocorrelation is shown as:
+
+```{r}
+#Prob1======
+dt.raw = read.delim('norm.nao.monthly.b5001.current.ascii04Nov2022.txt',header = F, sep = "")
+colnames(dt.raw) = c('Year', 'Month', 'Index')
+dt = dt.raw$Index
+acf(dt,lag.max = 30, main = 'sample auto correlation')
+```
+
+From the plot we see that MA(1) is probably appropriate for the data
+set.
+
+## (b)
+
+Fit the MA(1) to the data by using the conditional sum of squares
+method:
+
+```{r}
+# b use the conditional sum of squares=======
+Sfunc = function(alpha) #alpha consists of mu and the theta parameters (theta is indexed from 1; theta_0 is always 1)
+{
+  mu = alpha[1]
+  thet = alpha[-1]
+  n = length(dt)
+  q = length(thet)
+  zvals = c(rep(0, q), rep(9999, n))
+  for(t in 1:n)
+  {
+    zvals[q+t] = dt[t] - mu - sum(thet * zvals[(q+t-1):t])
+  }
+  ans = sum(zvals^2)
+  return(ans)
+}
+q = 1
+#initializer:
+muinit = mean(dt)
+rhohat = acf(dt, plot = F)$acf[2]#rho(1) is the sample autocorrelation at lag one
+thetainit = (1 - (sqrt(1-4*(rhohat^2))))/(2*rhohat)
+alphaest = optim(c(muinit, thetainit), Sfunc)$par #Both estimates of alphaest are almost the same
+
+```
+
+Point estimates and standard errors for $\mu$ and $\theta_1$
+
+```{r}
+#Standard Error Calculation
+#First compute Hessian
+library(numDeriv)
+H = hessian(Sfunc, alphaest)
+n = length(dt)
+sighat = sqrt(Sfunc(alphaest)/(n-length(alphaest)))
+#c(sighat, sighat^2)
+covmat = (sighat^2)*(solve(0.5*H))
+#covmat
+stderrs = sqrt(diag(covmat))
+cbind(alphaest, stderrs)
+```
+
+## (c)
+
+Fitting the model in an alternative way: the arima function:
+
+```{r}
+# c choose p = 1, fit the MA model using the built function====
+ma1 = arima(dt,order = c(0,0,1))
+ma1
+```
+
+The estimates and uncertainty quantfications are exactly the same.
+
+## (d)
+
+Future predictions:
+
+```{r}
+#d
+#Prediction with MA(1)=======
+L = 24 #number of future predictions desired
+muest = alphaest[1]
+thetaest = alphaest[2]
+q = 1
+n = length(dt)
+zvals = c(rep(0, q), rep(9999, n))
+for(t in 1:n)
+{
+  zvals[q+t] = dt[t] - muest - sum(thetaest * zvals[(q+t-1):t])
+}
+predest = muest + (thetaest*(zvals[(q+n)]))
+predvec = c(predest, rep(muest, L - 1))
+predse = c(sighat, rep(sighat*(sqrt(1+(thetaest^2))), L-1))
+cbind(predvec, predse)
+#Plot predictions:
+plot(c(dt, predvec), xlab = "Months" , type = "l")
+points((n+1) : (n+L), predvec, type = "l", col = "blue")
+points((n+1):(n+L), predvec + 2*predse, type = "l", col = "green")
+points((n+1):(n+L), predvec - 2*predse, type = "l", col = "green")
+legend('bottomleft',inset=0.05,c("Predictions","Bounds"),lty=1,col=c("blue","green"),title="Graph type")
+```
+
+Comments: the predictions are not reasonable for sure. The predictions
+from MA(1) model is quite simple since they reduce to a constant after
+the second time point. It doesn't match the oscillation of the original
+data.
+
+# Prob(2)
+
+## (a)
+
+Fit the AR(4) model:
+
+```{r}
+# Prob2======
+dt.raw = read.csv('IRLTLT01USM156N.csv')
+dt = dt.raw$IRLTLT01USM156N
+
+# a fit the AR(4) model======
+n = length(dt)
+p = 4
+yt = dt[(p+1):n]
+Xmat = matrix(1, (n-p), 1)
+for(j in 1:p)
+{
+  Xmat = cbind(Xmat, dt[(p-j+1):(n-j)])
+}
+modar = lm(yt ~ -1 + Xmat)
+```
+
+Points estimates and standard errors:
+
+```{r}
+summary(modar)
+```
+
+Predictions:
+
+```{r}
+#Predictions with the AR(p) model:
+k = 100 #k predictions into the future
+yhat = c(dt, rep(-9999, k))
+for(i in 1:k)
+{
+  ans = modar$coefficients[1]
+  for(j in 1:p)
+  {
+    ans = ans + (modar$coefficients[(j+1)])*yhat[n+i-j]
+  }
+  yhat[(n+i)] = ans
+}
+predvalues = yhat[-(1:n)]
+#Prediction Uncertainty:
+resdf = n - 2*p - 1
+sighat = sqrt((sum((modar$residuals)^2))/resdf) #this is also denoted by the Residual Standard Error
+Gamhat = matrix(sighat^2, 1, 1) #this is the uncertainty for the first i.e., (n+1)^th prediction
+#The following vector vkp is the vector a from the lecture notes
+vkp = matrix(modar$coefficients[2], 1, 1) #this is the estimate for phi1
+for(i in 1:(k-1))
+{
+  covterm = Gamhat %*% vkp
+  varterm = (sighat^2) + (t(vkp) %*% (Gamhat %*% vkp))
+  Gamhat = cbind(Gamhat, covterm)
+  Gamhat = rbind(Gamhat, c(t(covterm), varterm))
+  if (i < p) {vkp = c(modar$coefficients[(i+2)], vkp)}
+  if (i >= p) {vkp = c(0, vkp)}
+}
+predsd = sqrt(diag(Gamhat)) 
+#Plotting predictions with uncertainty bands (+/- 2 standard deviation bounds):
+predlower = predvalues - 2*predsd
+predupper = predvalues + 2*predsd
+
+yhatlower = c(dt, predlower)
+yhatupper = c(dt, predupper)
+
+plot(c((1:(n+k)), (1:(n+k)), (1:(n+k))), c(yhat[1:(n+k)], yhatlower[1:(n+k)], yhatupper[1:(n+k)]), type = "n", xlab = "Time", ylab = "Data")
+points((1:(n+k)), yhat[1:(n+k)], type = "l")
+points(1:n, dt[1:n], type = "l")
+points((n+1):(n+k), predvalues, type = "l", col = "blue")
+points((n+1):(n+k), predlower, type = "l", col = "red")
+points((n+1):(n+k), predupper, type = "l", col = "red")
+abline(v = n+1)# It doesn't work well for AR(4) model.
+```
+
+The predictions don't look reasonable. It turns out the predictions are
+getting flat which don't the present the original oscillation.
+
+## (b)
+
+Generate the first order difference and obtain the autocorrelation.
+
+```{r}
+Dt = diff(dt,lag = 1)
+acf(Dt, main = 'sample autocorrelation function')
+plot(Dt,type = 'l')
+```
+
+From the acf plot we might say that the MA(1) model is plausible.
+
+## (c)
+
+Fit the MA(1) model(by the built-in function arima):
+
+```{r}
+mamod=arima(Dt,order = c(0,0,1),include.mean = T)
+muhat = mamod$coef[2]
+thetahat = mamod$coef[1]
+stderr = sqrt(diag(mamod$var.coef))
+cat(paste0('Points estimates:','\n',
+           'mu:', muhat,'  theta:', thetahat,'\n',
+           'stand error:','\n',
+           'mu:', stderr[2],'   theta:', stderr[1],'\n'))
+```
+
+## (d)
+
+The model is rewritten as : $$
+D_t = \frac{\hat{\mu}}{1+\hat{\theta}}+\hat{\theta}D_{t-1}-\hat{\theta}^2 D_{t-2}+\hat{\theta}^3D_{t-3}+\varepsilon_t
+$$ Conforming to the notations, the parameters $\psi$ is given by:
+
+```{r}
+psi = c(muhat/(1+thetahat),thetahat,-thetahat^2,thetahat^3)
+psi = as.numeric(psi)
+psi
+library(astsa)
+ARMAtoAR(ma = c(thetahat),lag.max = 3)# check the correctness of the values of the coefficeints
+```
+
+## (e)
+
+After some algebra we get the expression: $$
+Y_t = \hat{\psi}_0+(\hat{\psi}_1+1)Y_{t-1}+(\hat{\psi}_2-\hat{\psi}_1)Y_{t-2}+(\hat{\psi}_3-\hat{\psi}_2)Y_{t-3}-\hat{\psi}_3Y_{t-4}+\epsilon_t
+$$ Compare the two sets of coefficients:
+
+```{r}
+psi.new = c(psi[1],psi[2]+1,psi[3]-psi[2],psi[4]-psi[3],-psi[4])
+psi.new
+psi = as.numeric(modar$coefficients)# apart from the intercepr term, the other are similar
+psi
+```
+
+We can see that apart from the intercept term, the other three are quite
+close.
+
+## (f)
+
+Predictions and comparison:
+
+```{r}
+k = 100 #k predictions into the future
+yhat.new = c(dt, rep(-9999, k))
+for(i in 1:k)
+{
+  ans = psi.new[1]
+  for(j in 1:p)
+  {
+    ans = ans + (psi.new[(j+1)])*yhat.new[n+i-j]
+  }
+  yhat.new[(n+i)] = ans
+}
+predvalues = yhat.new[-(1:n)]
+plot((700:(n+k)), yhat[700:(n+k)], type = "l")
+points((n+1):(n+k),yhat[(n+1):(n+k)], type = 'l',col = 'blue')
+points((n+1):(n+k),yhat.new[(n+1):(n+k)], type = 'l',col = 'red')
+legend('bottomright',inset=0.05,c("(a)Predictions","(f) Predictions"),lty=1,col=c("blue","red"),title="Graph type")
+```
+
+Comments: the predictions from the two models present different trends
+in the plot and both two models don't fit the original data well.
+
+# Prob3
+
+## (a)
+
+Fit the AR(16) model(the point estimates and stand errors are reported
+via the summary of the fitted model):
+
+```{r}
+dt.raw = read.csv('MRTSSM4453USN.csv')
+dt = dt.raw$MRTSSM4453USN
+# a fit the AR(16) model======
+n = length(dt)
+p = 16
+yt = dt[(p+1):n]
+Xmat = matrix(1, (n-p), 1)
+for(j in 1:p)
+{
+  Xmat = cbind(Xmat, dt[(p-j+1):(n-j)])
+}
+modar16 = lm(yt ~ -1 + Xmat)
+summary(modar16)
+```
+
+Predictions:
+
+```{r}
+#Predictions with the AR(p) model:
+k = 36 #k predictions into the future
+yhat.old = c(dt, rep(-9999, k))
+for(i in 1:k)
+{
+  ans = modar16$coefficients[1]
+  for(j in 1:p)
+  {
+    ans = ans + (modar16$coefficients[(j+1)])*yhat.old[n+i-j]
+  }
+  yhat.old[(n+i)] = ans
+}
+predvalues.old = yhat.old[-(1:n)]
+par(mfrow = c(1,1))
+plot((1:(n+k)), yhat.old[1:(n+k)], type = "l")
+#points(1:n, dt[1:n], type = "l")
+points((n+1):(n+k), predvalues.old, type = "l", col = "blue")
+```
+
+The predictions look reasonable since the increasing trend and the
+oscillation match roughly well with the original data.
+
+## (b)
+
+We can firstly look at the acf plot of the original data:
+
+```{r}
+acf(dt, lag.max = 30)
+```
+
+It turns out that the acf values of the data are very large even under
+the first 30 lags. The MA model may not be suitable to the
+data.Alternatively, we can see the future predictions for a range of 15.
+
+```{r}
+k = 36
+n = length(dt)
+mamod = arima(dt,order = c(0,0,1))
+predvalues = predict(mamod, n.ahead = k)$pred
+pred = c(dt,predvalues)
+plot(1:length(pred),pred,type = 'l', main = 'Predictions for MA(q) where q <= 15')
+points((n+1):(n+k), predvalues, type = "l", col = "blue")
+for (i in 2:15){
+mamod = arima(dt,order = c(0,0,i))
+predvalues = predict(mamod, n.ahead = k)$pred
+points((n+1):(n+k), predvalues, type = "l", col = "blue")
+}
+```
+
+The consequence verifies our conjecture in that the the predictions drop
+and converge quickly in the future time points.
+
+## (c)
+
+Generate the new data set and get an overview:
+
+```{r}
+Dt = diff(diff(dt,lag = 12))
+par(mfrow = c(2,1))
+plot(Dt, type = 'l')
+acf(Dt)
+```
+
+The ACF plot indicates that the MA(1) might be reasonable to the
+dataset.
+
+## (d)
+
+Fit the MA(1) model:
+
+```{r}
+mamod = arima(Dt,order = c(0,0,1))
+macoef = mamod$coef
+print('Point estimates:')
+stderr = sqrt(diag(mamod$var.coef))
+macoef
+print('Standard errors:')
+stderr
+
+```
+
+(RK: 'ma1' stands for $\theta$ and the 'intercept' for $\mu$)
+
+## (e)
+
+Parameters $\psi$ are given similarly to what we have done in 2(d):
+
+```{r}
+muhat =macoef[2]
+thetahat = macoef[1]
+psi = as.numeric(c(muhat/(1+thetahat),thetahat,-thetahat^2,thetahat^3))
+psi = t(data.frame(psi))
+colnames(psi) = c('psi0', 'psi1','psi2', 'psi3')
+rownames(psi) = c('values')
+psi
+```
+
+## (f)
+
+Coefficients calculation and comparison:
+
+```{r}
+# f 
+coef.new = c(psi[1],1+psi[2],-psi[2]+psi[3],-psi[3]+psi[4],-psi[4],rep(0,7),1,-1-psi[2],psi[2]-psi[3],psi[3]-psi[4],psi[4])
+coef.ori = as.numeric(modar16$coefficients)
+print("Coefficients in (f):")
+coef.new
+print("Coefficients in (a):")
+coef.ori
+```
+
+I think they are not similar. The first five estimates (containing the
+intercept term) have remarkable difference and the deviations of the
+following terms get smaller.
+
+## (g)
+
+Predictions and comparison:
+
+```{r}
+k = 36 #k predictions into the future
+yhat.new = c(dt, rep(-9999, k))
+for(i in 1:k)
+{
+  ans = coef.new[1]
+  for(j in 1:p)
+  {
+    ans = ans + (coef.new[(j+1)])*yhat.new[n+i-j]
+  }
+  yhat.new[(n+i)] = ans
+}
+predvalues.new = yhat.new[-(1:n)]
+par(mfrow = c(1,1))
+plot((1:(n+k)), yhat.new[1:(n+k)], type = "l", ylab = 'data', xlab = 'time')
+points(1:n, dt[1:n], type = "l")
+points((n+1):(n+k), predvalues.new, type = "l", col = "blue")
+points((n+1):(n+k), predvalues.old, type = "l", col = "red")
+legend('topleft',inset=0.05,c("AR.new","AR.old"),lty=1,col=c("blue","red"),title="Graph type")
+```
+
+The predictions present remarkable difference as we can seen from the
+plot above. The new predictions we obtain still drop and converge
+quickly although they keep an oscillation at the very beginning.
+
+# Prob4
+
+## (a)
+
+ACF and PACF:
+
+```{r}
+sunspots.data = read.delim("SN_y_tot_V2.0_25Aug2022.txt", header = F, sep = "")
+dt = sunspots.data[,2]
+par(mfrow = c(2,1))
+acf(dt, plot = T,type = "correlation",main = 'Sample Autocorrelation')
+pacf(dt, plot = T, main = "Sample Partial Autocorrelation")
+```
+
+The AR(9) is an appropriate model based on the fact that the pacf(h)
+shown in the plot are almost 0 for h\>9.
+
+## (b)
+
+Find the best performed model:
+
+```{r}
+#b=======
+k = 40#  number of future predictions desired
+n = length(dt)
+dt.train = dt[1:(n-k)]
+dt.test = dt[(n-k+1):n]
+errp = rep(1,15)
+errq = rep(1,15)
+for (i in 1:15){
+  armod = arima(dt.train, order = c(i,0,0))
+  pred = predict(armod, n.ahead =k)$pred
+  errp[i] = mean((dt.test-pred)^2)
+}
+for (i in 1:15){
+  armod = arima(dt.train, order = c(0,0,i))
+  pred = predict(armod, n.ahead =k)$pred
+  errq[i] = mean((dt.test-pred)^2)
+}
+err =  c(errp,errq)
+which.min(err)
+length(dt)
+```
+
+It turns out the the AR(15) model performs best in terms of the mean
+squared error of prediction.
+
+Comparison between the predictions:
+
+```{r}
+#comparison
+
+armod9 = arima(dt.train, order = c(9,0,0))
+pred9 = predict(armod9, n.ahead =k)$pred
+armod15 = arima(dt.train, order = c(15,0,0))
+pred15 = predict(armod15, n.ahead =k)$pred
+par(mfrow = c(1,1))
+plot(dt, type = 'l')
+points((n-k+1):n, pred9, type  = 'l', col = 'blue')
+points((n-k+1):n, pred15, type = 'l', col = 'red')
+abline (v = (n-k),col = 'green')
+legend('topleft',inset=0.05,c("AR(9)","AR(15)"),lty=1,col=c("blue","red"),title="Graph type")
+```
+
+The predictions from the two model are very close and fit the original
+data well.
+
+# Prob5
+
+## (a)
+
+From the formula for BLP: $$
+\hat{Y} = E[Y]+Cov(Y,X)(Cov(X)^{-1})(X-E[X])
+$$ We can predict $Y_1$ in terms of $Y_3$ as : $$
+\hat{Y_1} = \frac{1}{2}Y_3
+$$
+
+## (b)
+
+Due to the symmetric structure, the BLP for $Y_2$ is exactly the same as
+$Y_1$: $$
+\hat{Y_2} = \frac{1}{2}Y_3
+$$
+
+## (c)
+
+$$
+\rho_{Y_1,Y_2|Y_3} = Corr(Y_1-1/2Y_3, Y_2-1/2Y_3) = -1
+$$
+
+# Prob6
+
+## (a)
+
+$$
+\hat{Y_1} = E[Y_1] +Cov(Y_1,Y_3)Cov(Y_3)^{-1}(Y_3-E[Y_3]) = \frac{1}{3}Y_3
+$$
+
+## 
+
+## (b)
+
+$$
+\hat{Y_2} = \hat{Y_1}  = \frac{1}{3}Y_3
+$$
+
+## (c)
+
+$$
+\rho_{Y_1,Y_2|Y_3} = Corr(Y_1-1/3Y_3, Y_2-1/3Y_3) = \frac{-1/3\sigma^2}{2/3\sigma^2} = -\frac{1}{2}
+$$
+
+# Prob7
+
+## (a)
+
+From the formula
+$Corr(Y_i, Y_j) = \frac{Cov(Y_i,Y_j)}{\sqrt{Var(Y_i)}\sqrt{Var(Y_j)}}$,
+we can determine the sign of the correlation between $Y_i$ and $Y_j$
+directly from the matrix $\Sigma$ and the required pairs for (i,j) are:
+
+(1,2), (1,4), (2,3)
+
+## (b)
+
+Given the inverse covariance matrix, we can use the following formula to
+determine the sign of partial correlation as: $$
+\rho_{Y_i, Y_j|Y_k, k\neq i,j} = \frac{-(\Sigma^{-1})(i,j)}{\sqrt{(\Sigma^{-1})(i,i)(\Sigma^{-1})(j,j)}}
+$$
+
+Then the sign of the partial correlation is fully determined by the sign
+of corresponding entry of the inverse covariance matrix.The required
+pairs for (i,j) are given by:
+
+(1,3), (2,4)
+
+## (c)
+
+Same as what we have done in (b), the required pairs are:
+
+(1,2), (1,4), (2,3)
+
+## (d)
+
+The formula for $\beta_i^*$ is given as: $$
+\beta_i^* = \rho_{Y_4,Y_i|X_k, k\neq i}\sqrt{\frac{Var(r_{Y_4|Y_k,k\neq i})}{Var(r_{Y_i|Y_k,k\neq i})}}
+$$ The signs of the coefficients can be determined directly from the
+signs of the partial correlation.In this sense, we can conclude that
+$\beta_2^*$ is exactly zero and $\beta_1^*$ is strictly positive. For
+$\beta_0^*$,we can see from the original BLP formula where: $$
+\beta_0^* = E[Y]-Cov(Y,X)(Cov(X)^{-1})E[X] = 0
+$$ So the $\beta_0^*$ is strictly 0 as well.
+
+## (e)
+
+We have the formula for the variance of the residual as:
+
+$$
+Var[\gamma_Y|X] = Var[Y]-Cov(Y,X)Cov(X)^{-1}Cov(X, Y)
+$$ Which can be interpreted as the Schur complement of the (4,4)th entry
+of the variance matrix $\Sigma$ or the reciprocal of the (4,4)th entry
+of the inverse matrix $\Sigma^{-1}$. So,
+$Var[\gamma_{Y_4}|Y_1, Y_2, Y_3] = 1$.
+
+# Prob8
+
+## (a)
+
+We can write the $X_2$, $X_3$ and $X_4$ in terms of $X_1$ and $Z_i$ and
+then compute the matrix as $$
+\Sigma = Cov(X_1,X_2, X_3,X_4) = \begin{pmatrix}
+    1&  -\frac{1}{2} &\frac{1}{4}      &  -\frac{1}{8}\\
+    -\frac{1}{2}&  1 &-\frac{1}{2}      &   \frac{1}{4}\\
+\frac{1}{4} & -\frac{1}{2}  &1  & -\frac{1}{2}\\
+    -\frac{1}{8}&  \frac{1}{4} &   -\frac{1}{2}& 1
+\end{pmatrix}
+$$ So, $$
+\Sigma_1 = Cov(X_1,X_2,X_3) =  \begin{pmatrix}
+    1&  -\frac{1}{2} &\frac{1}{4}      \\
+    -\frac{1}{2}&  1 &-\frac{1}{2}      \\
+\frac{1}{4} & -\frac{1}{2}  &1 \\
+\end{pmatrix}
+$$
+
+## (b)
+
+$$
+\Sigma_2 = Cov(X_2, X_3,X_4) = \begin{pmatrix}
+      1 &-\frac{1}{2}      &   \frac{1}{4}\\
+ -\frac{1}{2}  &1  & -\frac{1}{2}\\
+     \frac{1}{4} &   -\frac{1}{2}& 1
+\end{pmatrix}
+$$
+
+## (c)
+
+$$
+(\Sigma_2)^{-1} =\begin{pmatrix}4/3& 2/3& 0\\2/3& 5/3& 2/3\\0& 2/3 &4/3\end{pmatrix}
+$$ Then, the partial correlation is given by:
+
+$$
+\rho_{X_2,X_4|X_3} = \frac{-(\Sigma_2^{-1})(1,3)}{\sqrt{(\Sigma^{-1})(1,1)(\Sigma^{-1})(3,3)}} = 0
+$$
+
+## (d)
+
+$$
+\Sigma^{-1}  = \begin{pmatrix}
+    4/3&  2/3 &0      &  0\\
+    2/3&  5/3&2/3      &  0\\
+0 & 2/3  &5/3  & 2/3\\
+    0&  0&   2/3& 4/3
+\end{pmatrix}
+$$ Then, the partial correlation is given by:
+
+$$
+\rho_{X_1,X_4|X_2,X_3} = \frac{-(\Sigma^{-1})(1,4)}{\sqrt{(\Sigma^{-1})(1,1)(\Sigma^{-1})(4,4)}} = 0
+$$
+
+## (e)
+
+$$
+BLP = E[X_4]+Cov(X_4,X)(Cov(X)^{-1})(X-E[X]) = -\frac{1}{2}X_3
+$$
+
+Where
+
+$$
+X = \begin{pmatrix}
+X_1\\X_2\\X_3\\
+\end{pmatrix}
+\quad 
+Cov(X )= \Sigma
+$$
